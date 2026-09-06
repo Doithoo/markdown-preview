@@ -589,21 +589,11 @@ final class PreviewViewController: NSViewController, QLPreviewingController, WKN
     }
 
     private func addingCopyButtonClearance(to html: String) -> String {
-        // Vendor scripts can contain `</head>` as data. The document's real
-        // closing tag is the final occurrence in MarkdownHTML's output.
-        guard let headEnd = html.range(of: "</head>", options: .backwards) else { return html }
-        let verticalClearance = Int(Self.floatingButtonVerticalClearance)
-        let style = """
-        <style>
-        body {
-            padding-bottom: calc(\(verticalClearance)px + env(safe-area-inset-bottom));
-        }
-        </style>
-
-        """
-        var result = html
-        result.insert(contentsOf: style, at: headEnd.lowerBound)
-        return result
+        // Placement is subtle and load-bearing — see CopyButtonClearance.
+        CopyButtonClearance.applying(
+            to: html,
+            vertical: Int(Self.floatingButtonVerticalClearance)
+        )
     }
 
     func preparePreviewOfFile(at url: URL) async throws {
