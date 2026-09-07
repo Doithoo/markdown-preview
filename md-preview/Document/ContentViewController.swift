@@ -445,6 +445,13 @@ final class ContentViewController: NSViewController {
         }
     }
 
+    /// The search row sits in the content host beneath the native toolbar.
+    weak var findOverlay: NSView?
+
+    func chromeOverlaysDidChange() {
+        updateObscuredContentInsets()
+    }
+
     /// The whole obscured strip, including the native tab bar. AppKit
     /// exposes the tab bar as a bottom titlebar accessory; subtracting its
     /// height would let it consume the page's top padding.
@@ -452,7 +459,15 @@ final class ContentViewController: NSViewController {
         guard let window = view.window, let contentView = window.contentView else {
             return view.safeAreaInsets.top
         }
-        return max(0, contentView.bounds.height - window.contentLayoutRect.maxY)
+        var inset = contentView.bounds.height - window.contentLayoutRect.maxY
+        if MainSplitViewController.usesNativeChromeAccessories {
+            return max(inset, view.safeAreaInsets.top)
+        }
+        if #available(macOS 26.0, *),
+           let find = findOverlay, find.window === window, !find.isHidden {
+            inset += find.fittingSize.height - MainSplitViewController.tabBarOverlap(for: window)
+        }
+        return max(0, inset)
     }
 
     /// Pre-Tahoe there is no frost and no `obscuredContentInsets`, so the
@@ -469,14 +484,21 @@ final class ContentViewController: NSViewController {
     ///
     /// The window keeps .fullSizeContentView, so only the web view moves —
     /// the sidebar still spans full height, the way Finder and Preview do.
-    /// Keep this gate in step with `DocumentWindowController.usesThemedChrome`.
     private func pinWebViewBelowChrome() {
-        guard webViewChromeTopConstraint == nil,
-              let guide = view.window?.contentLayoutGuide as? NSLayoutGuide else { return }
-        webViewTopConstraint?.isActive = false
-        let top = webView.topAnchor.constraint(equalTo: guide.topAnchor)
-        top.isActive = true
-        webViewChromeTopConstraint = top
+        if webViewChromeTopConstraint == nil,
+           let guide = view.window?.contentLayoutGuide as? NSLayoutGuide {
+            webViewTopConstraint?.isActive = false
+            let top = webView.topAnchor.constraint(equalTo: guide.topAnchor)
+            top.isActive = true
+            webViewChromeTopConstraint = top
+        }
+        let findHeight: CGFloat
+        if let find = findOverlay, find.window === view.window, !find.isHidden {
+            findHeight = max(0, find.fittingSize.height - MainSplitViewController.tabBarOverlap(for: view.window))
+        } else {
+            findHeight = 0
+        }
+        webViewChromeTopConstraint?.constant = findHeight
     }
 
     private func updateObscuredContentInsets() {
