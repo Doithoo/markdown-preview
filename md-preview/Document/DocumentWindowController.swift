@@ -255,6 +255,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
                 documentWindow.titlebarAppearsTransparent = true
             }
         }
+        (editBar as? EditAccessoryContainerView)?.updateFullscreenBackground()
+        (findBarOverlay as? EditAccessoryContainerView)?.updateFullscreenBackground()
     }
 
     /// AppKit's automatic tab placement runs when NSDocument shows its
@@ -557,6 +559,32 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
     /// Sequoia rows use the native titlebar material with unthemed controls.
     /// Newer systems provide their backdrop through native chrome.
     final class EditAccessoryContainerView: NSView {
+        private var fullscreenBackdrop: NSVisualEffectView?
+
+        func updateFullscreenBackground() {
+            guard #available(macOS 26.0, *) else { return }
+            guard #unavailable(macOS 27.0) else { return }
+            if window?.styleMask.contains(.fullScreen) == true {
+                if fullscreenBackdrop == nil {
+                    let backdrop = NSVisualEffectView(frame: bounds)
+                    backdrop.material = .titlebar
+                    backdrop.blendingMode = .withinWindow
+                    backdrop.state = .followsWindowActiveState
+                    backdrop.autoresizingMask = [.width, .height]
+                    addSubview(backdrop, positioned: .below, relativeTo: subviews.first)
+                    fullscreenBackdrop = backdrop
+                }
+                fullscreenBackdrop?.isHidden = false
+            } else {
+                fullscreenBackdrop?.isHidden = true
+            }
+        }
+
+        override func viewDidChangeEffectiveAppearance() {
+            super.viewDidChangeEffectiveAppearance()
+            updateFullscreenBackground()
+        }
+
         override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
             if #unavailable(macOS 26.0) {
@@ -582,6 +610,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
         // cursor wins between the buttons until the bar is reinstalled.
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            updateFullscreenBackground()
             window?.invalidateCursorRects(for: self)
         }
 
