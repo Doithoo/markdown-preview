@@ -12,17 +12,46 @@ import Foundation
 nonisolated extension MarkdownHTML {
     // Shared document typography, spacing, and controls. Logical positioning
     // keeps lists, quotations, and table alignment consistent in both directions.
-    static let stylesheet = """
+    /// The shared document stylesheet plus the code highlighting class rules.
+    /// The class rules live here, not with the in-page highlighter, because a
+    /// page whose code arrived highlighted from the renderer never loads that
+    /// runtime, yet its spans still need their colors.
+    static let stylesheet = baseStylesheet + "\n" + highlightThemeCSS
+
+    private static let baseStylesheet = """
     :root {
         color-scheme: light dark;
-        --text: #1d1d1f;
-        --secondary: #6e6e73;
-        --link: #0066cc;
+        /* Semantic system colors. WebKit resolves them for the element's own
+           color scheme, so the forced-scheme attribute and the media query
+           below both get the right appearance without a second palette, and
+           the page follows the system accent and increased-contrast settings. */
+        --text: -apple-system-label;
+        --secondary: -apple-system-secondary-label;
+        --tertiary: -apple-system-tertiary-label;
+        --quote-border: -apple-system-quaternary-label;
+        --grid: -apple-system-separator;
+        --accent: -apple-system-control-accent;
+        --link: rgb(0, 104, 218);
         --aside-bg: #f5f5f7;
         --aside-border: #696969;
-        --quote-border: #d2d2d7;
-        --code-bg: #f5f5f7;
-        --grid: #d2d2d7;
+        --code-bg: #f9f9f9;
+        --code-border: #f0f0f0;
+        /* Code highlighting palette; the class mapping lives in
+           MarkdownHTML+Highlight.swift and the editor mirrors these values. */
+        --hl-plain: var(--text);
+        --hl-keyword: #9b2393;
+        --hl-string: #c41a16;
+        --hl-comment: #5d6c79;
+        --hl-doc-keyword: #4a5560;
+        --hl-number: #1c00cf;
+        --hl-type: #3900a0;
+        --hl-builtin: #6c36a9;
+        --hl-declaration: #0b4f79;
+        --hl-function: #0f68a0;
+        --hl-variable: #326d74;
+        --hl-preprocessor: #643820;
+        --hl-attribute: #815f03;
+        --hl-url: #0e0eff;
         --mdp-list-indent: 2.1em;
         --mdp-list-gap: 0.5em;
     }
@@ -31,14 +60,24 @@ nonisolated extension MarkdownHTML {
     }
     :root[data-mdp-color-scheme="dark"] {
         color-scheme: dark;
-        --text: #f5f5f7;
-        --secondary: #86868b;
-        --link: #2997ff;
+        --link: rgb(65, 156, 255);
         --aside-bg: #323232;
         --aside-border: #9a9a9e;
-        --quote-border: #6e6e73;
-        --code-bg: #2A2828;
-        --grid: #424245;
+        --code-bg: #262626;
+        --code-border: #323232;
+        --hl-keyword: #fc5fa3;
+        --hl-string: #fc6a5d;
+        --hl-comment: #6c7986;
+        --hl-doc-keyword: #92a1b1;
+        --hl-number: #d0bf69;
+        --hl-type: #d0a8ff;
+        --hl-builtin: #a167e6;
+        --hl-declaration: #5dd8ff;
+        --hl-function: #41a1c0;
+        --hl-variable: #67b7a4;
+        --hl-preprocessor: #fd8f3f;
+        --hl-attribute: #bf8555;
+        --hl-url: #5482ff;
     }
     :root[data-mdp-color-scheme],
     :root[data-mdp-color-scheme] body {
@@ -46,14 +85,24 @@ nonisolated extension MarkdownHTML {
     }
     @media (prefers-color-scheme: dark) {
         :root:not([data-mdp-color-scheme="light"]) {
-            --text: #f5f5f7;
-            --secondary: #86868b;
-            --link: #2997ff;
+            --link: rgb(65, 156, 255);
             --aside-bg: #323232;
             --aside-border: #9a9a9e;
-            --quote-border: #6e6e73;
-            --code-bg: #2A2828;
-            --grid: #424245;
+            --code-bg: #262626;
+            --code-border: #323232;
+            --hl-keyword: #fc5fa3;
+            --hl-string: #fc6a5d;
+            --hl-comment: #6c7986;
+            --hl-doc-keyword: #92a1b1;
+            --hl-number: #d0bf69;
+            --hl-type: #d0a8ff;
+            --hl-builtin: #a167e6;
+            --hl-declaration: #5dd8ff;
+            --hl-function: #41a1c0;
+            --hl-variable: #67b7a4;
+            --hl-preprocessor: #fd8f3f;
+            --hl-attribute: #bf8555;
+            --hl-url: #5482ff;
         }
     }
 
@@ -147,6 +196,26 @@ nonisolated extension MarkdownHTML {
         padding-right: var(--mdp-page-inset, 0);
     }
     article.markdown-body > *:first-child { margin-top: 0 !important; }
+    /* A flex column keeps WebKit from painting the selection across the gaps
+       between blocks, so a selection highlights text, not empty space. The
+       same applies inside every block container that holds other blocks:
+       lists, quotations, alerts, and code blocks. List items stay list items, so their
+       markers survive copy and paste. Screen only: flex containers do not
+       fragment across printed pages. Blocks keep their top-only margins, so
+       nothing relied on margin collapsing. */
+    @media screen {
+        article.markdown-body,
+        article.markdown-body ul,
+        article.markdown-body ol,
+        article.markdown-body blockquote,
+        article.markdown-body .markdown-alert,
+        article.markdown-body .md-code-wrap,
+        article.markdown-body pre {
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+        }
+    }
     .md-inline-tab {
         white-space: pre;
         tab-size: 4;
@@ -240,16 +309,20 @@ nonisolated extension MarkdownHTML {
     h1, h2, h3, h4, h5, h6 {
         font-weight: 600;
         line-height: 1.25;
-        margin: calc(0.6rem + 0.5em) 0 0.3em;
+        /* Top-only, like every block: the next block's own top margin is the
+           gap below a heading. In the flex column margins no longer collapse,
+           so a bottom margin here would add to it. */
+        margin: calc(0.6rem + 0.5em) 0 0;
         overflow-wrap: anywhere;
     }
-    /* Keep our heading scale and give every level the same wrapping rhythm. */
-    h1 { font-size: 1.802em; }
-    h2 { font-size: 1.602em; }
-    h3 { font-size: 1.424em; }
-    h4 { font-size: 1.266em; }
-    h5 { font-size: 1.125em; }
-    h6 { font-size: 1em; }
+    /* System title scale as ratios of a 13px body: Large Title 26, Title 1
+       22, Title 2 17, Title 3 15, Headline 13, Subheadline 11. */
+    h1 { font-size: 2em; }
+    h2 { font-size: 1.692em; }
+    h3 { font-size: 1.308em; }
+    h4 { font-size: 1.154em; }
+    h5 { font-size: 1em; }
+    h6 { font-size: 0.846em; }
     :is(h1, h2, h3, h4, h5, h6) code { font-size: inherit; }
     /* The blank before a heading shrinks like every final blank; the
        heading's own margin restores the one-line gap, keeping the total at
@@ -313,9 +386,10 @@ nonisolated extension MarkdownHTML {
 
     code {
         font-family: \(codeFontFamily);
-        font-size: var(--mdp-code-font-size, 0.88em);
+        font-size: var(--mdp-code-font-size, 0.9em);
         padding: 0.15em 0.3em;
         background: var(--code-bg);
+        border: 0.5px solid var(--code-border);
         border-radius: 5px;
     }
     :not(pre) > code {
@@ -328,6 +402,7 @@ nonisolated extension MarkdownHTML {
         margin: \(paragraphSpacing)px 0 0;
         padding: 16px;
         background: var(--code-bg);
+        border: 0.5px solid var(--code-border);
         border-radius: 8px;
         overflow-x: auto;
         line-height: 1.3;
@@ -360,7 +435,9 @@ nonisolated extension MarkdownHTML {
         display: block;
         padding: 0;
         background: transparent;
-        font-size: var(--mdp-code-font-size, 0.88em);
+        border: 0;
+        /* Block code reads at the body size; only inline code steps down. */
+        font-size: 1em;
     }
     .md-code-wrap {
         position: relative;
@@ -614,13 +691,13 @@ nonisolated extension MarkdownHTML {
         padding-inline-start: var(--mdp-list-indent);
         padding-inline-end: 0;
     }
-    ol > li::marker { font-variant-numeric: tabular-nums; }
-    ul { list-style-type: "•  "; }
-    /* The text marker stays for copy/paste and for reserving the gutter,
-       but renders transparent; a 0.4em circle is painted in its place.
-       Drawn with a border, not a background, so PDF export keeps it even
-       when backgrounds are not printed. */
-    ul > li::marker { color: transparent; }
+    ol > li::marker { color: var(--accent); font-variant-numeric: tabular-nums; }
+    /* No text marker: it would paint as a selected box beside every item.
+       The gutter comes from the list padding, a 0.4em circle is painted in
+       its place, and copying a list yields its Markdown source, bullets
+       included. Drawn with a border, not a background, so PDF export keeps
+       it even when backgrounds are not printed. */
+    ul { list-style: none; }
     ul > li { position: relative; }
     ul > li:not(.task-list-item)::before {
         content: "";
@@ -629,7 +706,7 @@ nonisolated extension MarkdownHTML {
         top: calc(0.5lh - 0.2em);
         width: 0;
         height: 0;
-        border: 0.2em solid var(--text);
+        border: 0.2em solid var(--accent);
         border-radius: 50%;
     }
     li { margin-top: \(listItemSpacing)px; }
@@ -661,8 +738,8 @@ nonisolated extension MarkdownHTML {
         flex: 0 0 auto;
     }
     .task-list-item-checkbox:checked {
-        border-color: #007aff;
-        background: #007aff;
+        border-color: var(--accent);
+        background: var(--accent);
     }
     .task-list-item-checkbox:not(:disabled) { cursor: pointer; }
     .task-list-item-checkbox:checked::after {
@@ -720,9 +797,9 @@ nonisolated extension MarkdownHTML {
     }
     .md-table-editor th.is-editing,
     .md-table-editor td.is-editing {
-        outline: 2px solid #007aff;
+        outline: 2px solid var(--accent);
         outline-offset: -2px;
-        background: color-mix(in srgb, #007aff 8%, transparent);
+        background: color-mix(in srgb, var(--accent) 8%, transparent);
         white-space: pre-wrap;
     }
     .md-table-editor .is-table-part-selected {
@@ -730,7 +807,7 @@ nonisolated extension MarkdownHTML {
         --table-selection-right-edge: 0 0 transparent;
         --table-selection-bottom-edge: 0 0 transparent;
         --table-selection-left-edge: 0 0 transparent;
-        background: color-mix(in srgb, #007aff 14%, Canvas);
+        background: color-mix(in srgb, var(--accent) 14%, Canvas);
         box-shadow:
             var(--table-selection-top-edge),
             var(--table-selection-right-edge),
@@ -738,16 +815,16 @@ nonisolated extension MarkdownHTML {
             var(--table-selection-left-edge);
     }
     .md-table-editor .is-table-selection-top {
-        --table-selection-top-edge: inset 0 1px color-mix(in srgb, #007aff 52%, transparent);
+        --table-selection-top-edge: inset 0 1px color-mix(in srgb, var(--accent) 52%, transparent);
     }
     .md-table-editor .is-table-selection-right {
-        --table-selection-right-edge: inset -1px 0 color-mix(in srgb, #007aff 52%, transparent);
+        --table-selection-right-edge: inset -1px 0 color-mix(in srgb, var(--accent) 52%, transparent);
     }
     .md-table-editor .is-table-selection-bottom {
-        --table-selection-bottom-edge: inset 0 -1px color-mix(in srgb, #007aff 52%, transparent);
+        --table-selection-bottom-edge: inset 0 -1px color-mix(in srgb, var(--accent) 52%, transparent);
     }
     .md-table-editor .is-table-selection-left {
-        --table-selection-left-edge: inset 1px 0 color-mix(in srgb, #007aff 52%, transparent);
+        --table-selection-left-edge: inset 1px 0 color-mix(in srgb, var(--accent) 52%, transparent);
     }
     .md-table-editor.is-saving { opacity: 0.72; }
 
@@ -762,7 +839,7 @@ nonisolated extension MarkdownHTML {
         display: block;
         max-width: 100%;
         margin: 1.6em auto;
-        border-radius: 10px;
+        border-radius: 8px;
     }
     /* Keep downscaled images proportional, but let explicit width/height
        attributes (e.g. GitHub-style <img height="54">) take effect. */
@@ -807,7 +884,8 @@ nonisolated extension MarkdownHTML {
             --aside-bg: #f5f5f7;
             --aside-border: #696969;
             --quote-border: #d2d2d7;
-            --code-bg: #f5f5f7;
+            --code-bg: #f9f9f9;
+            --code-border: #f0f0f0;
             --grid: #d2d2d7;
         }
         html,

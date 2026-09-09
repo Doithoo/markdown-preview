@@ -5,8 +5,7 @@
 // themselves unless the cursor is inside the construct.
 
 import {
-  EditorView, keymap, ViewPlugin, Decoration, WidgetType,
-  drawSelection, dropCursor,
+  EditorView, keymap, ViewPlugin, Decoration, WidgetType, dropCursor,
 } from "@codemirror/view"
 import { Annotation, EditorState, EditorSelection, StateField, Transaction } from "@codemirror/state"
 import {
@@ -893,6 +892,19 @@ const tableEditors = StateField.define({
 const hide = Decoration.replace({})
 const bulletDeco = Decoration.replace({ widget: new TextWidget("•", "cm-md-bullet") })
 const activeBulletDeco = Decoration.mark({ class: "cm-md-bullet-source" })
+// Ordered markers sit in the same hanging box as bullets, right-aligned and
+// in the accent color, so item text lines up across list kinds like the
+// preview's ::marker. The active marker stays editable source in that box.
+const orderedDecoCache = new Map()
+const orderedDeco = (mark) => {
+  let deco = orderedDecoCache.get(mark)
+  if (!deco) {
+    deco = Decoration.replace({ widget: new TextWidget(mark, "cm-md-ordered") })
+    orderedDecoCache.set(mark, deco)
+  }
+  return deco
+}
+const activeOrderedDeco = Decoration.mark({ class: "cm-md-ordered-source" })
 const hrDeco = Decoration.replace({ widget: new RuleWidget() })
 const markdownListMarker = /^([ \t]*)([-+*]|\d+[.)])([ \t]+|$)/
 
@@ -941,7 +953,54 @@ const blockSeparatorLine = (height) => {
   }
   return deco
 }
-const quoteLine = Decoration.line({ class: "cm-md-quote" })
+// A block that starts on the line right after another block (no authored
+// blank between them) still gets its margin-top in the preview. Mirror it as
+// padding-bottom on the previous block's last line; padding, not margin, so
+// CodeMirror's per-line height measurement stays exact. The same value is
+// exposed as a variable so pseudo-element bars can stop above the gap.
+const blockGapLineCache = new Map()
+const blockGapLine = (height) => {
+  let deco = blockGapLineCache.get(height)
+  if (!deco) {
+    deco = Decoration.line({
+      class: "cm-md-block-gap",
+      attributes: { style: `padding-bottom:${height}px;--cm-md-block-gap:${height}px;` },
+    })
+    blockGapLineCache.set(height, deco)
+  }
+  return deco
+}
+// Quotation lines carry their nesting depth: the preview indents each nested
+// blockquote by another 1.5em and draws one rule per level. Depth is
+// resolved per line after the tree walk, so a line inside two blockquotes
+// gets one decoration at depth 2 rather than two competing ones.
+const quoteLineCache = new Map()
+const quoteLine = (depth) => {
+  let deco = quoteLineCache.get(depth)
+  if (!deco) {
+    const positions = []
+    const images = []
+    for (let level = 0; level < depth; level++) {
+      positions.push(`calc(0.3em + ${level * 1.5}em) 0`)
+      images.push("linear-gradient(var(--quote-border), var(--quote-border))")
+    }
+    deco = Decoration.line({
+      class: "cm-md-quote",
+      attributes: {
+        style: `padding-inline-start:${depth * 1.5}em;`
+          + `background-image:${images.join(",")};`
+          + `background-position:${positions.join(",")};`,
+      },
+    })
+    quoteLineCache.set(depth, deco)
+  }
+  return deco
+}
+// Lines of a list item that carry no marker (a continuation paragraph, a
+// nested code block) align with the item text: same depth padding, but no
+// hanging indent, and the source indentation is hidden like a nested
+// marker's.
+const listContinuationLine = Decoration.line({ class: "cm-md-list-continuation" })
 const codeLine = Decoration.line({ class: "cm-md-codeblock" })
 const codeLineFirst = Decoration.line({ class: "cm-md-codeblock cm-md-codeblock-first" })
 const codeLineLast = Decoration.line({ class: "cm-md-codeblock cm-md-codeblock-last" })
@@ -959,7 +1018,7 @@ const listDepthLine = (depth) => {
     deco = Decoration.line({
       class: `cm-md-list-depth-${depth}`,
       attributes: {
-        style: `padding-inline-start:${depth * 1.6}em;text-indent:-1.6em;`,
+        style: `padding-inline-start:${depth * 2.1}em;text-indent:-2.1em;`,
       },
     })
     listDepthLineCache.set(depth, deco)
@@ -1276,6 +1335,16 @@ function buildDecorations(view, detectedCodeCache) {
       default: return METRICS.paragraph
     }
   }
+  // Adjacent blocks: the preview gives the second block its margin-top even
+  // without a blank line (a paragraph right under a heading, a fence right
+  // after a paragraph). Put that gap on the previous block's last line.
+  let frontmatterTo = -1
+  const gapBeforeAdjacent = (node) => {
+    const line = state.doc.lineAt(node.from)
+    if (line.number === 1 || line.from <= frontmatterTo) return
+    if (blankRunBefore(node.from).count !== 0) return
+    lineOnce(state.doc.line(line.number - 1).from, blockGapLine(blockMarginTop(node)))
+  }
   const separatorBlankBefore = (node) => {
     const run = blankRunBefore(node.from)
     if (run.count === 0) return
@@ -1299,6 +1368,8 @@ function buildDecorations(view, detectedCodeCache) {
   // materializing a SyntaxNode per visited node.
   let depth = 0
   const listStack = []
+  const quoteStack = []
+  const quoteDepthByLine = new Map()
 
   for (const { from, to } of view.visibleRanges) {
     let contentDocumentDepth = null
@@ -1312,7 +1383,10 @@ function buildDecorations(view, detectedCodeCache) {
 
         // --- Block separators ------------------------------------------
         if (contentDocumentDepth != null && depth === contentDocumentDepth + 1) {
-          if (SEPARATOR_BLOCKS.has(name)) separatorBlankBefore(node)
+          if (SEPARATOR_BLOCKS.has(name)) {
+            separatorBlankBefore(node)
+            gapBeforeAdjacent(node)
+          }
         }
 
         // --- Frontmatter ----------------------------------------------
@@ -1323,6 +1397,7 @@ function buildDecorations(view, detectedCodeCache) {
           // step back so the card never bleeds onto the first body line.
           const end = node.to > node.from && state.doc.lineAt(node.to).from === node.to
             ? node.to - 1 : node.to
+          frontmatterTo = end
           eachLine(node.from, end, frontmatterLine)
           lineOnce(node.from, frontmatterFirstLine)
           lineOnce(state.doc.lineAt(end).from, frontmatterLastLine)
@@ -1371,7 +1446,14 @@ function buildDecorations(view, detectedCodeCache) {
 
         // --- Blockquotes ----------------------------------------------
         if (name === "Blockquote") {
-          eachLine(node.from, node.to, quoteLine)
+          quoteStack.push(node.from)
+          let pos = node.from
+          while (pos <= node.to) {
+            const line = state.doc.lineAt(pos)
+            quoteDepthByLine.set(line.from, Math.max(quoteDepthByLine.get(line.from) || 0, quoteStack.length))
+            if (line.to >= node.to) break
+            pos = line.to + 1
+          }
           return
         }
         if (name === "QuoteMark") {
@@ -1533,8 +1615,26 @@ function buildDecorations(view, detectedCodeCache) {
           eachLine(node.from, node.to, listItemLine)
           lineOnce(node.from, listDepthLine(listStack.length))
           listDepthPositions.add(state.doc.lineAt(node.from).from)
+          // Continuation lines of this item (not nested markers, not blank)
+          // sit at the item's text column with their indentation hidden.
+          {
+            const firstLine = state.doc.lineAt(node.from)
+            let pos = firstLine.to + 1
+            while (pos <= node.to) {
+              const line = state.doc.lineAt(pos)
+              const text = line.text
+              if (text.length > 0 && !markdownListMarker.test(text)) {
+                lineOnce(line.from, listContinuationLine)
+                lineOnce(line.from, listDepthLine(listStack.length))
+                const lead = text.match(/^[ \t]+/)
+                if (lead) ranges.push(hide.range(line.from, line.from + lead[0].length))
+              }
+              if (line.to >= node.to) break
+              pos = line.to + 1
+            }
+          }
           // Source indentation uses proportional-font space glyphs, which
-          // does not equal the rendered list's 1.6em nesting step. Hide that
+          // does not equal the rendered list's 2.1em nesting step. Hide that
           // source-only prefix and let the semantic depth line own geometry.
           const line = state.doc.lineAt(node.from)
           const rawIndentedList = line.text.match(markdownListMarker)
@@ -1560,6 +1660,14 @@ function buildDecorations(view, detectedCodeCache) {
               if (after === " ") ranges.push(hide.range(node.to, node.to + 1))
             } else {
               ranges.push(bulletDeco.range(node.from, node.to + (after === " " ? 1 : 0)))
+            }
+          } else if (/^\d+[.)]$/.test(mark) && !isTask) {
+            const after = state.doc.sliceString(node.to, node.to + 1)
+            if (touchesLineOf(node.from)) {
+              ranges.push(activeOrderedDeco.range(node.from, node.to))
+              if (after === " ") ranges.push(hide.range(node.to, node.to + 1))
+            } else {
+              ranges.push(orderedDeco(mark).range(node.from, node.to + (after === " " ? 1 : 0)))
             }
           }
           return
@@ -1672,8 +1780,13 @@ function buildDecorations(view, detectedCodeCache) {
         depth--
         const name = node.name
         if (name === "BulletList" || name === "OrderedList") listStack.pop()
+        if (name === "Blockquote") quoteStack.pop()
       },
     })
+    for (const [lineFrom, quoteDepth] of quoteDepthByLine) {
+      lineOnce(lineFrom, quoteLine(quoteDepth))
+    }
+    quoteDepthByLine.clear()
     // A deeply indented marker may be parsed as continuation content inside
     // its ancestor ListItem rather than as a standalone CodeBlock. The parent
     // already gives that line list typography; fill in the missing depth,
@@ -2071,9 +2184,11 @@ window.MDEditor = {
         doc,
         extensions: [
           history(),
-          // CodeMirror virtualizes long documents. Its selection layer keeps
-          // a full-document Cmd-A range visible as the viewport moves.
-          drawSelection(),
+          // Native selection, not drawSelection(): the selection layer paints
+          // every selected line edge to edge, while WebKit's own selection
+          // follows the text once the host styles .cm-content as a flex
+          // column (see EditorViewController). CodeMirror re-syncs the DOM
+          // selection to the rendered viewport as the document virtualizes.
           dropCursor(),
           EditorView.lineWrapping,
           EditorView.perLineTextDirection.of(true),
